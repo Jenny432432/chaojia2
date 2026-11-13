@@ -102,6 +102,7 @@
     let displayId = null;
     let intervalSeconds = 1;
     let nextBeepAt = 0;
+    let displayNextBeepAt = 0;
     let activeOscillators = new Set();
     const lookAhead = 0.12;
 
@@ -156,7 +157,9 @@
     }
 
     function updateReadout() {
-      const remaining = Math.max(0, nextBeepAt - audioContext.currentTime);
+      const now = audioContext.currentTime;
+      while (displayNextBeepAt <= now) displayNextBeepAt += intervalSeconds;
+      const remaining = Math.max(0, displayNextBeepAt - now);
       nextText.textContent = formatTime(remaining);
       detailText.textContent = "Next beep in";
     }
@@ -172,6 +175,7 @@
         await audioContext.resume();
         if (schedulerId !== null) return;
         nextBeepAt = audioContext.currentTime + intervalSeconds;
+        displayNextBeepAt = nextBeepAt;
         statusText.textContent = "Running";
         startButton.disabled = true;
         stopButton.disabled = false;
