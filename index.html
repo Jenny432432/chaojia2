@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f4f0">
+  <title>Interval Beeper</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f4f4f0;
+      --ink: #171717;
+      --accent: #b9dcc4;
+    }
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100svh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { width: min(100%, 390px); }
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(2rem, 9vw, 3rem);
+      font-weight: 650;
+      letter-spacing: -0.07em;
+    }
+    .sub { margin: 0 0 42px; font-size: 14px; opacity: .65; }
+    label { display: block; margin-bottom: 10px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+    .controls { display: grid; grid-template-columns: 1fr 116px; gap: 10px; }
+    input, select, button {
+      min-height: 58px;
+      border: 1px solid rgba(23,23,23,.22);
+      border-radius: 8px;
+      background: transparent;
+      color: var(--ink);
+      font: inherit;
+    }
+    input { width: 100%; padding: 0 16px; font-size: 22px; }
+    select { padding: 0 12px; font-size: 16px; }
+    input:focus, select:focus, button:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+    button { cursor: pointer; font-weight: 600; }
+    #start { border-color: var(--accent); background: var(--accent); }
+    button:disabled { cursor: not-allowed; opacity: .45; }
+    .readout {
+      margin-top: 54px;
+      padding-top: 22px;
+      border-top: 1px solid rgba(23,23,23,.2);
+    }
+    .status { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; opacity: .65; }
+    #next { margin-top: 8px; font-size: clamp(2rem, 10vw, 3.2rem); font-weight: 550; letter-spacing: -.06em; font-variant-numeric: tabular-nums; }
+    #detail { margin-top: 8px; min-height: 20px; font-size: 13px; opacity: .65; }
+    .note { margin-top: 34px; font-size: 12px; line-height: 1.6; opacity: .55; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Interval Beeper</h1>
+    <p class="sub">A simple sound on a repeating interval.</p>
+
+    <label for="interval">Beep every</label>
+    <div class="controls">
+      <input id="interval" type="number" min="1" step="any" value="60" inputmode="decimal" aria-label="Interval amount">
+      <select id="unit" aria-label="Interval unit">
+        <option value="0.001">Milliseconds</option>
+        <option value="1" selected>Seconds</option>
+        <option value="60">Minutes</option>
+        <option value="3600">Hours</option>
+        <option value="86400">Days</option>
+      </select>
+    </div>
+    <div class="actions">
+      <button id="start" type="button">Start</button>
+      <button id="stop" type="button" disabled>Stop</button>
+    </div>
+
+    <section class="readout" aria-live="polite">
+      <div class="status" id="status">Stopped</div>
+      <div id="next">—</div>
+      <div id="detail">Set an interval and press Start.</div>
+    </section>
+    <p class="note">Keep this page open for reliable timing. Your device or browser may limit background playback. Very short intervals can sound continuous.</p>
+  </main>
+
+  <script>
+    const intervalInput = document.querySelector("#interval");
+    const unitSelect = document.querySelector("#unit");
+    const startButton = document.querySelector("#start");
+    const stopButton = document.querySelector("#stop");
+    const statusText = document.querySelector("#status");
+    const nextText = document.querySelector("#next");
+    const detailText = document.querySelector("#detail");
+
+    let audioContext = null;
+    let schedulerId = null;
+    let displayId = null;
+    let intervalSeconds = 1;
+    let nextBeepAt = 0;
+    let activeOscillators = new Set();
+    const lookAhead = 0.12;
+
+    function formatTime(seconds) {
+      if (seconds < 1) return Math.max(0, Math.ceil(seconds * 1000)) + " ms";
+      if (seconds < 60) return seconds.toFixed(seconds < 10 ? 2 : 1) + " s";
+      if (seconds < 3600) return (seconds / 60).toFixed(2) + " min";
+      if (seconds < 86400) return (seconds / 3600).toFixed(2) + " hr";
+      return (seconds / 86400).toFixed(2) + " days";
+    }
+
+    function readInterval() {
+      const amount = Number(intervalInput.value);
+      const seconds = amount * Number(unitSelect.value);
+      if (!Number.isFinite(seconds) || amount <= 0 || seconds < 0.001) {
+        throw new Error("Enter an interval of at least 1 millisecond.");
+      }
+      if (seconds > 315360000) throw new Error("The maximum interval is 10 years.");
+      return seconds;
+    }
+
+    function scheduleBeep(atTime) {
+      const duration = Math.min(0.04, intervalSeconds * 0.65);
+      const attack = Math.min(0.002, duration / 4);
+      const oscillator = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(880, atTime);
+      gain.gain.setValueAtTime(0, atTime);
+      gain.gain.linearRampToValueAtTime(0.16, atTime + attack);
+      gain.gain.setValueAtTime(0.16, Math.max(atTime + attack, atTime + duration - attack));
+      gain.gain.linearRampToValueAtTime(0, atTime + duration);
+      oscillator.connect(gain);
+      gain.connect(audioContext.destination);
+      activeOscillators.add(oscillator);
+      oscillator.addEventListener("ended", () => {
+        activeOscillators.delete(oscillator);
+        oscillator.disconnect();
+        gain.disconnect();
+      }, { once: true });
+      oscillator.start(atTime);
+      oscillator.stop(atTime + duration + 0.001);
+    }
+
+    function scheduleAhead() {
+      if (!audioContext || audioContext.state !== "running") return;
+      const horizon = audioContext.currentTime + lookAhead;
+      while (nextBeepAt < horizon) {
+        scheduleBeep(nextBeepAt);
+        nextBeepAt += intervalSeconds;
+      }
+    }
+
+    function updateReadout() {
+      const remaining = Math.max(0, nextBeepAt - audioContext.currentTime);
+      nextText.textContent = formatTime(remaining);
+      detailText.textContent = "Next beep in";
+    }
+
+    async function start() {
+      try {
+        intervalSeconds = readInterval();
+        if (!audioContext) {
+          const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+          if (!AudioContextClass) throw new Error("Web Audio is not supported in this browser.");
+          audioContext = new AudioContextClass();
+        }
+        await audioContext.resume();
+        if (schedulerId !== null) return;
+        nextBeepAt = audioContext.currentTime + intervalSeconds;
+        statusText.textContent = "Running";
+        startButton.disabled = true;
+        stopButton.disabled = false;
+        intervalInput.disabled = true;
+        unitSelect.disabled = true;
+        schedulerId = window.setInterval(scheduleAhead, 25);
+        displayId = window.setInterval(updateReadout, 50);
+        scheduleAhead();
+        updateReadout();
+      } catch (error) {
+        statusText.textContent = "Stopped";
+        detailText.textContent = error.message;
+      }
+    }
+
+    function stop() {
+      if (schedulerId !== null) window.clearInterval(schedulerId);
+      if (displayId !== null) window.clearInterval(displayId);
+      schedulerId = null;
+      displayId = null;
+      if (audioContext) {
+        for (const oscillator of activeOscillators) {
+          try { oscillator.stop(); } catch (_) {}
+        }
+      }
+      activeOscillators.clear();
+      statusText.textContent = "Stopped";
+      nextText.textContent = "—";
+      detailText.textContent = "Set an interval and press Start.";
+      startButton.disabled = false;
+      stopButton.disabled = true;
+      intervalInput.disabled = false;
+      unitSelect.disabled = false;
+    }
+
+    startButton.addEventListener("click", start);
+    stopButton.addEventListener("click", stop);
+  </script>
+</body>
+</html>
